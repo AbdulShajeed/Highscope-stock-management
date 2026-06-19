@@ -42,6 +42,11 @@ interface Booking {
   engineerName: string | null
   bookingDate: string | null
   notes: string | null
+  status: string
+  isDeleted: number
+  deletedAt: string | null
+  deletedBy: string | null
+  deleteReason: string | null
   itemCode: string
   item_description: string
   make: string | null
@@ -57,7 +62,7 @@ export default function CategoryPage() {
   const [loading, setLoading] = useState(true)
   const [showForm, setShowForm] = useState(false)
   const [editingItem, setEditingItem] = useState<StockItem | null>(null)
-  const [editingItemWithBookings, setEditingItemWithBookings] = useState<(StockItem & { monthlyBooked: number }) | null>(null)
+  const [editingItemWithBookings, setEditingItemWithBookings] = useState<(StockItem & { monthlyBooked: number; totalSold: number; inStoreQty: number }) | null>(null)
   const [showSplitModal, setShowSplitModal] = useState(false)
   const [splitItem, setSplitItem] = useState<StockItem | null>(null)
   const [splitData, setSplitData] = useState({
