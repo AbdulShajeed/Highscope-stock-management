@@ -40,13 +40,6 @@ export default function Dashboard() {
   useEffect(() => {
     const fetchData = async () => {
       try {
-        // Fire-and-forget background tasks (don't block page load)
-        const now = new Date()
-        const currentMonth = now.toLocaleString('default', { month: 'long' })
-        const currentYear = now.getFullYear()
-        fetch('/api/auto-add-month', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ month: currentMonth, year: currentYear }) }).catch(() => {})
-        fetch('/api/cleanup-old-months', { method: 'POST' }).catch(() => {})
-
         // Fetch all available monthly reports
         const allReportsRes = await fetch('/api/all-monthly-reports')
         const allReportsData = await allReportsRes.json()
