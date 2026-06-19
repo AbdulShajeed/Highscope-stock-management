@@ -62,12 +62,13 @@ export default function Dashboard() {
         setMonthlyReports(reports)
 
         // Create sales data for chart (only last 3 months with real data)
+        const months = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December']
         const sales: SalesData[] = allReportsData.slice(0, 3).map((report: any) => ({
           month: report.month.substring(0, 3),
           value: report.total_closing || 0,
-        })).reverse() // Reverse to show oldest first
+          monthIndex: months.indexOf(report.month),
+        })).sort((a, b) => a.monthIndex - b.monthIndex) // Chronological: oldest left, newest right
 
-        console.log('Sales data:', sales)
         setSalesData(sales)
       } catch (error) {
         console.error('Error fetching data:', error)
