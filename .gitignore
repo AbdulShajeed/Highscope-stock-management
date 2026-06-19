@@ -11,3 +11,4 @@ dev.db-shm
 dev.db-wal
 *.md
 pictures/
+.vercel
