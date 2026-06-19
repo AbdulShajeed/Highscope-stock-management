@@ -40,30 +40,12 @@ export default function Dashboard() {
   useEffect(() => {
     const fetchData = async () => {
       try {
-        // Check if current month exists, if not add it
+        // Fire-and-forget background tasks (don't block page load)
         const now = new Date()
         const currentMonth = now.toLocaleString('default', { month: 'long' })
         const currentYear = now.getFullYear()
-
-        // Try to add current month (will skip if already exists)
-        try {
-          await fetch('/api/auto-add-month', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ month: currentMonth, year: currentYear })
-          })
-        } catch (e) {
-          // Ignore errors, just continue
-        }
-
-        // Clean up old months (keep only last 6)
-        try {
-          await fetch('/api/cleanup-old-months', {
-            method: 'POST',
-          })
-        } catch (e) {
-          // Ignore errors, just continue
-        }
+        fetch('/api/auto-add-month', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ month: currentMonth, year: currentYear }) }).catch(() => {})
+        fetch('/api/cleanup-old-months', { method: 'POST' }).catch(() => {})
 
         // Fetch all available monthly reports
         const allReportsRes = await fetch('/api/all-monthly-reports')
