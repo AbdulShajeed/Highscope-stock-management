@@ -1,9 +1,8 @@
 import { NextRequest, NextResponse } from 'next/server'
 import prisma from '@/lib/db'
+import { createCache } from '@/lib/cache'
 
-// Server-side in-memory cache
-const apiCache = new Map<string, { data: any; timestamp: number }>()
-const CACHE_TTL = 60_000
+const cache = createCache<any[]>()
 
 export async function GET(request: NextRequest) {
   try {
@@ -13,27 +12,23 @@ export async function GET(request: NextRequest) {
     const year = searchParams.get('year')
     if (!categoryId) return NextResponse.json({ error: 'Category ID is required' }, { status: 400 })
 
-    const cacheKey = `customer-pos-${categoryId}-${month || ''}-${year || ''}`
-    const cached = apiCache.get(cacheKey)
-    if (cached && Date.now() - cached.timestamp < CACHE_TTL) {
-      return NextResponse.json(cached.data)
-    }
+    const cacheKey = `${categoryId}-${month || ''}-${year || ''}`
+    const cached = cache.get(cacheKey)
+    if (cached) return NextResponse.json(cached)
 
-    const where: any = { categoryId }
+    const where: Record<string, unknown> = { categoryId }
     if (month && year) {
-      const monthIndex = ['January','February','March','April','May','June','July','August','September','October','November','December'].indexOf(month) + 1
+      const monthIndex = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'].indexOf(month) + 1
       const monthStr = String(monthIndex).padStart(2, '0')
       where.date = { contains: `-${monthStr}-${year}` }
     }
 
     const pos = await prisma.customerPO.findMany({
       where,
-      orderBy: [{ date: 'desc' }, { createdAt: 'desc' }]
+      orderBy: [{ date: 'desc' }, { createdAt: 'desc' }],
     })
 
-    // Cache the result
-    apiCache.set(cacheKey, { data: pos, timestamp: Date.now() })
-
+    cache.set(cacheKey, pos)
     return NextResponse.json(pos)
   } catch (error) {
     console.error('Error fetching customer POs:', error)
@@ -43,17 +38,14 @@ export async function GET(request: NextRequest) {
 
 export async function POST(request: NextRequest) {
   try {
-    const body = await request.json()
-    const { categoryId, projectNo, date, totalValue } = body
+    const { categoryId, projectNo, date, totalValue } = await request.json()
     if (!categoryId) return NextResponse.json({ error: 'Category ID is required' }, { status: 400 })
 
     const po = await prisma.customerPO.create({
-      data: { categoryId, projectNo: projectNo || null, date: date || null, totalValue: parseFloat(totalValue) || 0 }
+      data: { categoryId, projectNo: projectNo || null, date: date || null, totalValue: parseFloat(totalValue) || 0 },
     })
 
-    // Invalidate cache
-    apiCache.clear()
-
+    cache.clear()
     return NextResponse.json(po, { status: 201 })
   } catch (error) {
     console.error('Error creating customer PO:', error)
@@ -63,18 +55,16 @@ export async function POST(request: NextRequest) {
 
 export async function PUT(request: NextRequest) {
   try {
-    const body = await request.json()
-    const { id, ...updateData } = body
+    const { id, ...updateData } = await request.json()
     if (!id) return NextResponse.json({ error: 'Customer PO ID is required' }, { status: 400 })
 
-    const data: any = {}
+    const data: Record<string, unknown> = {}
     if (updateData.projectNo !== undefined) data.projectNo = updateData.projectNo
     if (updateData.date !== undefined) data.date = updateData.date
     if (updateData.totalValue !== undefined) data.totalValue = parseFloat(updateData.totalValue)
 
     const po = await prisma.customerPO.update({ where: { id }, data })
-    // Invalidate cache
-    apiCache.clear()
+    cache.clear()
     return NextResponse.json(po)
   } catch (error) {
     console.error('Error updating customer PO:', error)
@@ -87,9 +77,9 @@ export async function DELETE(request: NextRequest) {
     const { searchParams } = new URL(request.url)
     const id = searchParams.get('id')
     if (!id) return NextResponse.json({ error: 'Customer PO ID is required' }, { status: 400 })
+
     await prisma.customerPO.delete({ where: { id } })
-    // Invalidate cache
-    apiCache.clear()
+    cache.clear()
     return NextResponse.json({ message: 'Customer PO deleted successfully' })
   } catch (error) {
     console.error('Error deleting customer PO:', error)

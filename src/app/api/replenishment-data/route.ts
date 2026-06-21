@@ -1,9 +1,28 @@
 import { NextRequest, NextResponse } from 'next/server'
 import prisma from '@/lib/db'
+import { createCache } from '@/lib/cache'
 
-// Server-side in-memory cache
-const apiCache = new Map<string, { data: any; timestamp: number }>()
-const CACHE_TTL = 60_000
+interface PurchaseOrderData {
+  id: string
+  poNumber: string
+  poReleasedDate: string | null
+  vendor: string | null
+  totalValue: number
+  leadTime: string | null
+  status: string
+  categoryId: string | null
+  createdAt: string
+  updatedAt: string
+}
+
+interface ReplenishmentDataResult {
+  category: { id: string; name: string; description: string | null }
+  stockItems: Array<{ id: string; itemCode: string; description: string; ratePerPcs: number | null }>
+  poList: PurchaseOrderData[]
+  summary: { totalPO: number; totalPOValue: number; totalPOReceived: number }
+}
+
+const cache = createCache<ReplenishmentDataResult>()
 
 export async function GET(request: NextRequest) {
   try {
@@ -11,13 +30,9 @@ export async function GET(request: NextRequest) {
     const categoryId = searchParams.get('id')
     if (!categoryId) return NextResponse.json({ error: 'Category ID is required' }, { status: 400 })
 
-    const cacheKey = `replenishment-data-${categoryId}`
-    const cached = apiCache.get(cacheKey)
-    if (cached && Date.now() - cached.timestamp < CACHE_TTL) {
-      return NextResponse.json(cached.data)
-    }
+    const cached = cache.get(categoryId)
+    if (cached) return NextResponse.json(cached)
 
-    // Fetch category + stock items + POs in parallel
     const [categoryRaw, stockItemsRaw, poList, summary, deliveredCount] = await Promise.all([
       prisma.category.findUnique({ where: { id: categoryId } }),
       prisma.stockItem.findMany({
@@ -42,12 +57,8 @@ export async function GET(request: NextRequest) {
       return NextResponse.json({ error: 'Category not found' }, { status: 404 })
     }
 
-    const category = {
-      id: categoryRaw.id, name: categoryRaw.name, description: categoryRaw.description,
-    }
-
-    const result = {
-      category,
+    const result: ReplenishmentDataResult = {
+      category: { id: categoryRaw.id, name: categoryRaw.name, description: categoryRaw.description },
       stockItems: stockItemsRaw,
       poList: poList.map(po => ({
         id: po.id, poNumber: po.poNumber, poReleasedDate: po.poReleasedDate,
@@ -62,9 +73,7 @@ export async function GET(request: NextRequest) {
       },
     }
 
-    // Cache the result
-    apiCache.set(cacheKey, { data: result, timestamp: Date.now() })
-
+    cache.set(categoryId, result)
     return NextResponse.json(result)
   } catch (error) {
     console.error('Error fetching replenishment data:', error)

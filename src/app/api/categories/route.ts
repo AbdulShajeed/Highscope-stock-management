@@ -1,30 +1,32 @@
 import { NextRequest, NextResponse } from 'next/server'
 import prisma from '@/lib/db'
+import { createSingletonCache } from '@/lib/cache'
 
-// Server-side in-memory cache
-const apiCache = { data: null as any, timestamp: 0 }
-const CACHE_TTL = 60_000
+interface CategoryData {
+  id: string
+  name: string
+  description: string | null
+  isDeleted: number
+  deletedAt: string | null
+  deleteReason: string | null
+  item_count: number
+  createdAt: Date
+  updatedAt: Date
+}
+
+const cache = createSingletonCache<CategoryData[]>()
 
 export async function GET() {
   try {
-    // Return cached data if fresh
-    if (apiCache.data && Date.now() - apiCache.timestamp < CACHE_TTL) {
-      return NextResponse.json(apiCache.data)
-    }
+    const cached = cache.get()
+    if (cached) return NextResponse.json(cached)
 
     const categories = await prisma.category.findMany({
-      include: {
-        _count: {
-          select: { stockItems: true }
-        }
-      },
-      orderBy: [
-        { isDeleted: 'asc' },
-        { name: 'asc' }
-      ]
+      include: { _count: { select: { stockItems: true } } },
+      orderBy: [{ isDeleted: 'asc' }, { name: 'asc' }],
     })
 
-    const result = categories.map(cat => ({
+    const result: CategoryData[] = categories.map(cat => ({
       id: cat.id,
       name: cat.name,
       description: cat.description,
@@ -36,82 +38,49 @@ export async function GET() {
       updatedAt: cat.updatedAt,
     }))
 
-    // Cache the result
-    apiCache.data = result
-    apiCache.timestamp = Date.now()
-
+    cache.set(result)
     return NextResponse.json(result)
   } catch (error) {
     console.error('Error fetching categories:', error)
-    return NextResponse.json(
-      { error: 'Failed to fetch categories' },
-      { status: 500 }
-    )
+    return NextResponse.json({ error: 'Failed to fetch categories' }, { status: 500 })
   }
 }
 
 export async function POST(request: NextRequest) {
   try {
-    const body = await request.json()
-    const { name, description } = body
-
-    if (!name) {
-      return NextResponse.json(
-        { error: 'Category name is required' },
-        { status: 400 }
-      )
-    }
+    const { name, description } = await request.json()
+    if (!name) return NextResponse.json({ error: 'Category name is required' }, { status: 400 })
 
     const existing = await prisma.category.findUnique({ where: { name } })
-    if (existing) {
-      return NextResponse.json(
-        { error: 'Category name already exists' },
-        { status: 400 }
-      )
-    }
+    if (existing) return NextResponse.json({ error: 'Category name already exists' }, { status: 400 })
 
     const category = await prisma.category.create({
-      data: { name, description: description || null }
+      data: { name, description: description || null },
     })
 
-    // Invalidate cache
-    apiCache.data = null
-
+    cache.clear()
     return NextResponse.json(category, { status: 201 })
   } catch (error) {
     console.error('Error creating category:', error)
-    return NextResponse.json(
-      { error: 'Failed to create category' },
-      { status: 500 }
-    )
+    return NextResponse.json({ error: 'Failed to create category' }, { status: 500 })
   }
 }
 
 export async function PUT(request: NextRequest) {
   try {
-    const body = await request.json()
-    const { id, name, description } = body
-
-    if (!id) {
-      return NextResponse.json({ error: 'Category ID is required' }, { status: 400 })
-    }
-    if (!name) {
-      return NextResponse.json({ error: 'Category name is required' }, { status: 400 })
-    }
+    const { id, name, description } = await request.json()
+    if (!id) return NextResponse.json({ error: 'Category ID is required' }, { status: 400 })
+    if (!name) return NextResponse.json({ error: 'Category name is required' }, { status: 400 })
 
     const existing = await prisma.category.findFirst({ where: { name, id: { not: id } } })
-    if (existing) {
-      return NextResponse.json({ error: 'Category name already exists' }, { status: 400 })
-    }
+    if (existing) return NextResponse.json({ error: 'Category name already exists' }, { status: 400 })
 
     const category = await prisma.category.update({
       where: { id },
-      data: { name, description: description || null }
+      data: { name, description: description || null },
     })
 
-    // Invalidate cache
-    apiCache.data = null
-
+    cache.clear()
     return NextResponse.json(category)
   } catch (error) {
     console.error('Error updating category:', error)
@@ -121,25 +90,21 @@ export async function PUT(request: NextRequest) {
 
 export async function DELETE(request: NextRequest) {
   try {
-    const body = await request.json()
-    const { id, deletedBy, reason } = body
-
+    const { id, deletedBy, reason } = await request.json()
     if (!id) return NextResponse.json({ error: 'Category ID is required' }, { status: 400 })
     if (!deletedBy) return NextResponse.json({ error: 'Name is required for deletion' }, { status: 400 })
     if (!reason) return NextResponse.json({ error: 'Reason is required for deletion' }, { status: 400 })
 
-    const category = await prisma.category.update({
+    await prisma.category.update({
       where: { id },
       data: {
         isDeleted: 1,
         deletedAt: new Date().toISOString(),
         deleteReason: `${reason} (by: ${deletedBy})`,
-      }
+      },
     })
 
-    // Invalidate cache
-    apiCache.data = null
-
+    cache.clear()
     return NextResponse.json({ message: 'Category archived successfully' })
   } catch (error) {
     console.error('Error deleting category:', error)

@@ -1,9 +1,35 @@
 import { NextRequest, NextResponse } from 'next/server'
 import prisma from '@/lib/db'
+import { createCache } from '@/lib/cache'
 
-// Server-side in-memory cache
-const apiCache = new Map<string, { data: any; timestamp: number }>()
-const CACHE_TTL = 60_000
+interface StockItemData {
+  id: string
+  itemCode: string
+  description: string
+  detailedDescription: string | null
+  make: string | null
+  ratePerPcs: number | null
+  location: string | null
+  incomingQty: number
+  soldQty: number
+  finalQty: number
+  totalValue: number | null
+  reorderLevel: number | null
+  notes: string | null
+  createdAt: string
+  isSplit: number
+  oldPrice: number | null
+  oldQty: number | null
+  newPrice: number | null
+  newQty: number | null
+}
+
+interface CategoryDataResult {
+  category: { id: string; name: string; description: string | null }
+  stockItems: StockItemData[]
+}
+
+const cache = createCache<CategoryDataResult>()
 
 export async function GET(request: NextRequest) {
   try {
@@ -11,13 +37,9 @@ export async function GET(request: NextRequest) {
     const categoryId = searchParams.get('id')
     if (!categoryId) return NextResponse.json({ error: 'Category ID is required' }, { status: 400 })
 
-    const cacheKey = `category-data-${categoryId}`
-    const cached = apiCache.get(cacheKey)
-    if (cached && Date.now() - cached.timestamp < CACHE_TTL) {
-      return NextResponse.json(cached.data)
-    }
+    const cached = cache.get(categoryId)
+    if (cached) return NextResponse.json(cached)
 
-    // Fetch category + stock items + PO data in parallel
     const [categoryRaw, stockItemsRaw, poData] = await Promise.all([
       prisma.category.findUnique({ where: { id: categoryId } }),
       prisma.stockItem.findMany({
@@ -37,12 +59,7 @@ export async function GET(request: NextRequest) {
       return NextResponse.json({ error: 'Category not found' }, { status: 404 })
     }
 
-    const category = {
-      id: categoryRaw.id, name: categoryRaw.name, description: categoryRaw.description,
-    }
-
-    // Process stock items with PO data
-    const stockItems = stockItemsRaw.map(item => {
+    const stockItems: StockItemData[] = stockItemsRaw.map(item => {
       const itemPOData = poData.filter(d => d.stockItemId === item.id)
       const incomingQty = itemPOData
         .filter(d => d.quantity - d.deliveredQuantity > 0)
@@ -63,11 +80,12 @@ export async function GET(request: NextRequest) {
       }
     })
 
-    const result = { category, stockItems }
+    const result: CategoryDataResult = {
+      category: { id: categoryRaw.id, name: categoryRaw.name, description: categoryRaw.description },
+      stockItems,
+    }
 
-    // Cache the result
-    apiCache.set(cacheKey, { data: result, timestamp: Date.now() })
-
+    cache.set(categoryId, result)
     return NextResponse.json(result)
   } catch (error) {
     console.error('Error fetching category data:', error)

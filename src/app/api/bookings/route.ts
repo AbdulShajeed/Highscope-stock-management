@@ -1,9 +1,16 @@
 import { NextRequest, NextResponse } from 'next/server'
 import prisma from '@/lib/db'
+import { createCache } from '@/lib/cache'
 
-// Server-side in-memory cache
-const apiCache = new Map<string, { data: any; timestamp: number }>()
-const CACHE_TTL = 60_000
+interface BookingData {
+  id: string; stockItemId: string; categoryId: string; month: string; year: number
+  quantityBooked: number; projectNumber: string | null; engineerName: string | null
+  bookingDate: string | null; notes: string | null; status: string
+  isDeleted: number; createdAt: Date; updatedAt: Date
+  itemCode: string; item_description: string; make: string | null
+}
+
+const cache = createCache<BookingData[]>()
 
 export async function GET(request: NextRequest) {
   try {
@@ -12,13 +19,11 @@ export async function GET(request: NextRequest) {
     const month = searchParams.get('month')
     const year = searchParams.get('year')
 
-    const cacheKey = `bookings-${categoryId || 'all'}-${month || ''}-${year || ''}`
-    const cached = apiCache.get(cacheKey)
-    if (cached && Date.now() - cached.timestamp < CACHE_TTL) {
-      return NextResponse.json(cached.data)
-    }
+    const cacheKey = `${categoryId || 'all'}-${month || ''}-${year || ''}`
+    const cached = cache.get(cacheKey)
+    if (cached) return NextResponse.json(cached)
 
-    const where: any = { isDeleted: 0 }
+    const where: Record<string, unknown> = { isDeleted: 0 }
     if (categoryId) where.categoryId = categoryId
     if (month) where.month = month
     if (year) where.year = parseInt(year)
@@ -26,10 +31,10 @@ export async function GET(request: NextRequest) {
     const bookings = await prisma.booking.findMany({
       where,
       include: { stockItem: { select: { itemCode: true, description: true, make: true } } },
-      orderBy: { createdAt: 'desc' }
+      orderBy: { createdAt: 'desc' },
     })
 
-    const result = bookings.map(b => ({
+    const result: BookingData[] = bookings.map(b => ({
       id: b.id, stockItemId: b.stockItemId, categoryId: b.categoryId,
       month: b.month, year: b.year, quantityBooked: b.quantityBooked,
       projectNumber: b.projectNumber, engineerName: b.engineerName,
@@ -38,9 +43,7 @@ export async function GET(request: NextRequest) {
       itemCode: b.stockItem.itemCode, item_description: b.stockItem.description, make: b.stockItem.make,
     }))
 
-    // Cache the result
-    apiCache.set(cacheKey, { data: result, timestamp: Date.now() })
-
+    cache.set(cacheKey, result)
     return NextResponse.json(result)
   } catch (error) {
     console.error('Error fetching bookings:', error)
@@ -50,8 +53,7 @@ export async function GET(request: NextRequest) {
 
 export async function POST(request: NextRequest) {
   try {
-    const body = await request.json()
-    const { stockItemId, categoryId, month, year, quantityBooked, projectNumber, engineerName, bookingDate, notes, status } = body
+    const { stockItemId, categoryId, month, year, quantityBooked, projectNumber, engineerName, bookingDate, notes, status } = await request.json()
 
     if (!stockItemId || !categoryId || !month || !year || quantityBooked === undefined) {
       return NextResponse.json({ error: 'Missing required fields' }, { status: 400 })
@@ -64,12 +66,10 @@ export async function POST(request: NextRequest) {
         projectNumber: projectNumber || null, engineerName: engineerName || null,
         bookingDate: bookingDate || null, notes: notes || null, status: status || 'In Store',
       },
-      include: { stockItem: { select: { itemCode: true, description: true, make: true } } }
+      include: { stockItem: { select: { itemCode: true, description: true, make: true } } },
     })
 
-    // Invalidate cache
-    apiCache.clear()
-
+    cache.clear()
     return NextResponse.json({
       ...booking, itemCode: booking.stockItem.itemCode,
       item_description: booking.stockItem.description, make: booking.stockItem.make,
@@ -82,23 +82,20 @@ export async function POST(request: NextRequest) {
 
 export async function PUT(request: NextRequest) {
   try {
-    const body = await request.json()
-    const { id, ...updateData } = body
+    const { id, ...updateData } = await request.json()
     if (!id) return NextResponse.json({ error: 'Booking ID is required' }, { status: 400 })
 
-    const data: any = {}
+    const data: Record<string, unknown> = {}
     for (const key of ['quantityBooked', 'projectNumber', 'engineerName', 'bookingDate', 'notes', 'status', 'isDeleted', 'deletedAt', 'deletedBy', 'deleteReason']) {
       if (updateData[key] !== undefined) data[key] = key === 'quantityBooked' ? parseInt(updateData[key]) : updateData[key]
     }
 
     const booking = await prisma.booking.update({
       where: { id }, data,
-      include: { stockItem: { select: { itemCode: true, description: true, make: true } } }
+      include: { stockItem: { select: { itemCode: true, description: true, make: true } } },
     })
 
-    // Invalidate cache
-    apiCache.clear()
-
+    cache.clear()
     return NextResponse.json({
       ...booking, itemCode: booking.stockItem.itemCode,
       item_description: booking.stockItem.description, make: booking.stockItem.make,
@@ -114,9 +111,9 @@ export async function DELETE(request: NextRequest) {
     const { searchParams } = new URL(request.url)
     const id = searchParams.get('id')
     if (!id) return NextResponse.json({ error: 'Booking ID is required' }, { status: 400 })
+
     await prisma.booking.delete({ where: { id } })
-    // Invalidate cache
-    apiCache.clear()
+    cache.clear()
     return NextResponse.json({ message: 'Booking deleted successfully' })
   } catch (error) {
     console.error('Error deleting booking:', error)

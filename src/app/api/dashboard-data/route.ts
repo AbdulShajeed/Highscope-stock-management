@@ -1,20 +1,39 @@
-import { NextRequest, NextResponse } from 'next/server'
+import { NextResponse } from 'next/server'
 import prisma from '@/lib/db'
+import { createSingletonCache } from '@/lib/cache'
 
-// Server-side in-memory cache
-const apiCache = { data: null as any, timestamp: 0 }
-const CACHE_TTL = 60_000
+interface DashboardData {
+  categories: Array<{
+    id: string
+    name: string
+    description: string | null
+    isDeleted: number
+    deletedAt: string | null
+    deleteReason: string | null
+    item_count: number
+  }>
+  monthlyReports: Array<{
+    month: string
+    year: number
+    total_opening: number
+    total_opening_value: number
+    total_incoming: number
+    total_sold: number
+    total_sold_value: number
+    total_closing: number
+    total_closing_value: number
+    item_count: number
+  }>
+}
 
-export async function GET(request: NextRequest) {
+const cache = createSingletonCache<DashboardData>()
+const MONTH_ORDER = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December']
+
+export async function GET() {
   try {
-    // Return cached data if fresh
-    if (apiCache.data && Date.now() - apiCache.timestamp < CACHE_TTL) {
-      return NextResponse.json(apiCache.data)
-    }
+    const cached = cache.get()
+    if (cached) return NextResponse.json(cached)
 
-    const monthOrder = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December']
-
-    // Fetch categories and monthly reports in parallel
     const [categoriesRaw, monthlyStocks, allRecords] = await Promise.all([
       prisma.category.findMany({
         include: { _count: { select: { stockItems: true } } },
@@ -34,23 +53,20 @@ export async function GET(request: NextRequest) {
       }),
     ])
 
-    // Process categories
     const categories = categoriesRaw.map(cat => ({
       id: cat.id, name: cat.name, description: cat.description,
       isDeleted: cat.isDeleted, deletedAt: cat.deletedAt, deleteReason: cat.deleteReason,
       item_count: cat._count.stockItems,
     }))
 
-    // Process monthly reports
     monthlyStocks.sort((a, b) => {
       if (a.year !== b.year) return b.year - a.year
-      return monthOrder.indexOf(b.month) - monthOrder.indexOf(a.month)
+      return MONTH_ORDER.indexOf(b.month) - MONTH_ORDER.indexOf(a.month)
     })
 
     const limitedStocks = monthlyStocks.slice(0, 6)
     const neededMonths = limitedStocks.map(ms => ({ month: ms.month, year: ms.year }))
 
-    // Filter records for needed months only
     const filteredRecords = allRecords.filter(r =>
       neededMonths.some(m => m.month === r.month && m.year === r.year)
     )
@@ -79,11 +95,8 @@ export async function GET(request: NextRequest) {
       }
     })
 
-    const result = { categories, monthlyReports }
-
-    // Cache the result
-    apiCache.data = result
-    apiCache.timestamp = Date.now()
+    const result: DashboardData = { categories, monthlyReports }
+    cache.set(result)
 
     return NextResponse.json(result)
   } catch (error) {

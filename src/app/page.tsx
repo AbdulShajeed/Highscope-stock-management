@@ -1,8 +1,9 @@
 'use client'
 
-import { useEffect, useState } from 'react'
+import { useEffect, useState, useCallback } from 'react'
 import Link from 'next/link'
 
+// Types
 interface Category {
   id: string
   name: string
@@ -24,9 +25,197 @@ interface SalesData {
   value: number
 }
 
-// In-memory cache (survives within same session)
-const cache = { data: null as any, timestamp: 0 }
+interface DashboardApiResponse {
+  categories: Category[]
+  monthlyReports: Array<{
+    month: string
+    year: number
+    total_closing: number
+  }>
+}
+
+interface ChartTooltip {
+  x: number
+  y: number
+  month: string
+  value: number
+  growth: string
+  isIncrease: boolean
+}
+
+// Constants
 const CACHE_TTL = 60_000
+const MONTHS = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'] as const
+const CHART_HEIGHT = 200
+const CHART_WIDTH = 600
+const CHART_BAR_WIDTH = 60
+const CHART_PADDING = 80
+
+// Cache
+const cache: { data: DashboardApiResponse | null; timestamp: number } = { data: null, timestamp: 0 }
+
+// Helper functions
+function processMonthlyReports(rawReports: DashboardApiResponse['monthlyReports']): MonthlyReport[] {
+  return rawReports.map(report => ({
+    month: report.month,
+    year: report.year,
+    total_customer_po_value: report.total_closing || 0,
+  }))
+}
+
+function processSalesData(rawReports: DashboardApiResponse['monthlyReports']): SalesData[] {
+  return rawReports
+    .map(report => ({
+      month: report.month.substring(0, 3),
+      value: report.total_closing || 0,
+      monthIndex: MONTHS.indexOf(report.month as typeof MONTHS[number]),
+    }))
+    .sort((a, b) => a.monthIndex - b.monthIndex)
+}
+
+async function fetchDashboardData(): Promise<DashboardApiResponse> {
+  const res = await fetch('/api/dashboard-data')
+  if (!res.ok) throw new Error(`HTTP ${res.status}`)
+  return res.json()
+}
+
+// Components
+function CategoryModal({
+  mode,
+  data,
+  onClose,
+  onSubmit,
+}: {
+  mode: 'add' | 'edit'
+  data: { name: string; description: string }
+  onClose: () => void
+  onSubmit: (data: { name: string; description: string }) => void
+}) {
+  const [formData, setFormData] = useState(data)
+
+  return (
+    <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
+      <div className="bg-white rounded-lg shadow-xl max-w-md w-full mx-4">
+        <div className="p-6">
+          <div className="flex justify-between items-center mb-4">
+            <h2 className="text-xl font-semibold text-gray-900">
+              {mode === 'add' ? 'Add New Category' : 'Edit Category'}
+            </h2>
+            <button onClick={onClose} className="text-gray-400 hover:text-gray-600">
+              <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+              </svg>
+            </button>
+          </div>
+          <div className="space-y-4">
+            <div>
+              <label className="block text-sm font-medium text-gray-700">Category Name *</label>
+              <input
+                type="text"
+                value={formData.name}
+                onChange={(e) => setFormData({ ...formData, name: e.target.value })}
+                className="mt-1 block w-full border border-gray-300 rounded-md shadow-sm py-2 px-3 focus:outline-none focus:ring-blue-500 focus:border-blue-500 sm:text-sm"
+                placeholder="Enter category name"
+              />
+            </div>
+            <div>
+              <label className="block text-sm font-medium text-gray-700">Description</label>
+              <textarea
+                value={formData.description}
+                onChange={(e) => setFormData({ ...formData, description: e.target.value })}
+                rows={3}
+                className="mt-1 block w-full border border-gray-300 rounded-md shadow-sm py-2 px-3 focus:outline-none focus:ring-blue-500 focus:border-blue-500 sm:text-sm"
+                placeholder="Enter category description (optional)"
+              />
+            </div>
+          </div>
+          <div className="flex justify-end space-x-3 mt-6">
+            <button onClick={onClose} className="px-4 py-2 border border-gray-300 rounded-md shadow-sm text-sm font-medium text-gray-700 bg-white hover:bg-gray-50">
+              Cancel
+            </button>
+            <button onClick={() => onSubmit(formData)} className="px-4 py-2 border border-transparent rounded-md shadow-sm text-sm font-medium text-white bg-blue-600 hover:bg-blue-700">
+              {mode === 'add' ? 'Add Category' : 'Save Changes'}
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+function DeleteCategoryModal({
+  category,
+  onClose,
+  onConfirm,
+}: {
+  category: Category
+  onClose: () => void
+  onConfirm: (name: string, reason: string) => void
+}) {
+  const [deleteName, setDeleteName] = useState('')
+  const [deleteReason, setDeleteReason] = useState('')
+
+  return (
+    <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
+      <div className="bg-white rounded-lg shadow-xl max-w-md w-full mx-4">
+        <div className="p-6">
+          <div className="flex justify-between items-center mb-4">
+            <h2 className="text-xl font-semibold text-gray-900">Archive Category</h2>
+            <button onClick={onClose} className="text-gray-400 hover:text-gray-600">
+              <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+              </svg>
+            </button>
+          </div>
+          <div className="mb-4 p-4 bg-yellow-50 border border-yellow-200 rounded-md">
+            <p className="text-sm text-yellow-800">
+              You are about to archive <strong>&quot;{category.name}&quot;</strong>.
+              This category will be moved to the bottom of the list and its name will be struck through.
+              The data will not be deleted.
+            </p>
+          </div>
+          <div className="space-y-4">
+            <div>
+              <label className="block text-sm font-medium text-gray-700">Your Name *</label>
+              <input
+                type="text"
+                value={deleteName}
+                onChange={(e) => setDeleteName(e.target.value)}
+                className="mt-1 block w-full border border-gray-300 rounded-md shadow-sm py-2 px-3 focus:outline-none focus:ring-blue-500 focus:border-blue-500 sm:text-sm"
+                placeholder="Enter your name to confirm"
+              />
+            </div>
+            <div>
+              <label className="block text-sm font-medium text-gray-700">Reason for Archiving *</label>
+              <textarea
+                value={deleteReason}
+                onChange={(e) => setDeleteReason(e.target.value)}
+                rows={3}
+                className="mt-1 block w-full border border-gray-300 rounded-md shadow-sm py-2 px-3 focus:outline-none focus:ring-blue-500 focus:border-blue-500 sm:text-sm"
+                placeholder="Enter the reason for archiving this category"
+              />
+            </div>
+          </div>
+          <div className="flex justify-end space-x-3 mt-6">
+            <button onClick={onClose} className="px-4 py-2 border border-gray-300 rounded-md shadow-sm text-sm font-medium text-gray-700 bg-white hover:bg-gray-50">
+              Cancel
+            </button>
+            <button
+              onClick={() => {
+                if (!deleteName) { alert('Please enter your name'); return }
+                if (!deleteReason) { alert('Please enter a reason'); return }
+                onConfirm(deleteName, deleteReason)
+              }}
+              className="px-4 py-2 border border-transparent rounded-md shadow-sm text-sm font-medium text-white bg-red-600 hover:bg-red-700"
+            >
+              Archive Category
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+  )
+}
 
 export default function Dashboard() {
   const [categories, setCategories] = useState<Category[]>([])
@@ -35,38 +224,21 @@ export default function Dashboard() {
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState(false)
   const [showAddCategory, setShowAddCategory] = useState(false)
-  const [newCategory, setNewCategory] = useState({ name: '', description: '' })
   const [editingCategory, setEditingCategory] = useState<Category | null>(null)
-  const [editCategoryData, setEditCategoryData] = useState({ name: '', description: '' })
   const [deletingCategory, setDeletingCategory] = useState<Category | null>(null)
-  const [deleteData, setDeleteData] = useState({ name: '', reason: '' })
-  const [chartTooltip, setChartTooltip] = useState<{ x: number; y: number; month: string; value: number; growth: string; isIncrease: boolean } | null>(null)
+  const [chartTooltip, setChartTooltip] = useState<ChartTooltip | null>(null)
 
-  const processData = (data: any) => {
+  const processData = useCallback((data: DashboardApiResponse) => {
     setCategories(data.categories)
-    const reports: MonthlyReport[] = data.monthlyReports.map((r: any) => ({
-      month: r.month, year: r.year, total_customer_po_value: r.total_closing || 0,
-    }))
-    setMonthlyReports(reports)
-    const months = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December']
-    const sales: SalesData[] = data.monthlyReports.map((r: any) => ({
-      month: r.month.substring(0, 3), value: r.total_closing || 0, monthIndex: months.indexOf(r.month),
-    })).sort((a, b) => a.monthIndex - b.monthIndex)
-    setSalesData(sales)
-  }
+    setMonthlyReports(processMonthlyReports(data.monthlyReports))
+    setSalesData(processSalesData(data.monthlyReports))
+  }, [])
 
-  const fetchData = async () => {
-    // Show cached data instantly
-    if (cache.data && Date.now() - cache.timestamp < CACHE_TTL) {
-      processData(cache.data)
-      setLoading(false)
-      // Background refresh
-      refreshData()
-      return
-    }
+  const loadData = useCallback(async (showLoading = true) => {
+    if (showLoading) setLoading(true)
+
     try {
-      const res = await fetch('/api/dashboard-data')
-      const data = await res.json()
+      const data = await fetchDashboardData()
       cache.data = data
       cache.timestamp = Date.now()
       processData(data)
@@ -76,60 +248,118 @@ export default function Dashboard() {
     } finally {
       setLoading(false)
     }
-  }
+  }, [processData])
 
-  const refreshData = async () => {
+  const loadFromCacheOrFetch = useCallback(async () => {
+    if (cache.data && Date.now() - cache.timestamp < CACHE_TTL) {
+      processData(cache.data)
+      setLoading(false)
+      loadData(false) // Background refresh
+      return
+    }
+    await loadData()
+  }, [processData, loadData])
+
+  useEffect(() => { loadFromCacheOrFetch() }, [loadFromCacheOrFetch])
+
+  const handleAddCategory = async (data: { name: string; description: string }) => {
     try {
-      const res = await fetch('/api/dashboard-data')
-      const data = await res.json()
-      cache.data = data
-      cache.timestamp = Date.now()
-      processData(data)
-    } catch (e) { console.error('Background refresh failed:', e) }
-  }
-
-  useEffect(() => { fetchData() }, [])
-
-  const handleAddCategory = async () => {
-    if (!newCategory.name) { alert('Category name is required'); return }
-    try {
-      const response = await fetch('/api/categories', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(newCategory) })
+      const response = await fetch('/api/categories', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(data),
+      })
       if (response.ok) {
         const category = await response.json()
         setCategories([...categories, { ...category, item_count: 0 }])
-        setNewCategory({ name: '', description: '' }); setShowAddCategory(false)
-      } else { const error = await response.json(); alert(error.error || 'Failed to add category') }
-    } catch (e) { console.error('Error adding category:', e); alert('Failed to add category') }
+        setShowAddCategory(false)
+      } else {
+        const error = await response.json()
+        alert(error.error || 'Failed to add category')
+      }
+    } catch (e) {
+      console.error('Error adding category:', e)
+      alert('Failed to add category')
+    }
   }
 
-  const handleEditCategory = (category: Category) => {
-    setEditingCategory(category)
-    setEditCategoryData({ name: category.name, description: category.description || '' })
-  }
-
-  const handleUpdateCategory = async () => {
-    if (!editCategoryData.name) { alert('Category name is required'); return }
+  const handleUpdateCategory = async (data: { name: string; description: string }) => {
+    if (!editingCategory) return
     try {
-      const response = await fetch('/api/categories', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ id: editingCategory?.id, name: editCategoryData.name, description: editCategoryData.description }) })
+      const response = await fetch('/api/categories', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ id: editingCategory.id, ...data }),
+      })
       if (response.ok) {
-        setCategories(categories.map(cat => cat.id === editingCategory?.id ? { ...cat, name: editCategoryData.name, description: editCategoryData.description } : cat))
-        setEditingCategory(null); setEditCategoryData({ name: '', description: '' })
-      } else { const error = await response.json(); alert(error.error || 'Failed to update category') }
-    } catch (e) { console.error('Error updating category:', e); alert('Failed to update category') }
+        setCategories(categories.map(cat =>
+          cat.id === editingCategory.id ? { ...cat, ...data } : cat
+        ))
+        setEditingCategory(null)
+      } else {
+        const error = await response.json()
+        alert(error.error || 'Failed to update category')
+      }
+    } catch (e) {
+      console.error('Error updating category:', e)
+      alert('Failed to update category')
+    }
   }
 
-  const confirmDeleteCategory = async () => {
+  const handleDeleteCategory = async (deletedBy: string, reason: string) => {
     if (!deletingCategory) return
-    if (!deleteData.name) { alert('Please enter your name to confirm deletion'); return }
-    if (!deleteData.reason) { alert('Please enter a reason for deletion'); return }
     try {
-      const response = await fetch('/api/categories', { method: 'DELETE', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ id: deletingCategory.id, deletedBy: deleteData.name, reason: deleteData.reason }) })
+      const response = await fetch('/api/categories', {
+        method: 'DELETE',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ id: deletingCategory.id, deletedBy, reason }),
+      })
       if (response.ok) {
-        setCategories(categories.map(cat => cat.id === deletingCategory.id ? { ...cat, isDeleted: 1, deletedAt: new Date().toISOString(), deleteReason: `${deleteData.reason} (by: ${deleteData.name})` } : cat))
-        setDeletingCategory(null); setDeleteData({ name: '', reason: '' })
-      } else { const error = await response.json(); alert(error.error || 'Failed to delete category') }
-    } catch (e) { console.error('Error deleting category:', e); alert('Failed to delete category') }
+        setCategories(categories.map(cat =>
+          cat.id === deletingCategory.id
+            ? { ...cat, isDeleted: 1, deletedAt: new Date().toISOString(), deleteReason: `${reason} (by: ${deletedBy})` }
+            : cat
+        ))
+        setDeletingCategory(null)
+      } else {
+        const error = await response.json()
+        alert(error.error || 'Failed to delete category')
+      }
+    } catch (e) {
+      console.error('Error deleting category:', e)
+      alert('Failed to delete category')
+    }
   }
+
+  // Chart calculations
+  const maxValue = Math.max(...salesData.map(d => d.value), 1)
+  const chartSpacing = (CHART_WIDTH - CHART_PADDING * 2) / (salesData.length || 1)
+
+  const bars = salesData.map((d, i) => {
+    const x = CHART_PADDING + i * chartSpacing + chartSpacing / 2 - CHART_BAR_WIDTH / 2
+    const barHeight = (d.value / maxValue) * (CHART_HEIGHT - 40)
+    const y = CHART_HEIGHT - barHeight - 20
+    const prevValue = i > 0 ? salesData[i - 1].value : null
+    const growth = prevValue !== null ? ((d.value - prevValue) / (prevValue || 1) * 100).toFixed(1) : null
+    const isIncrease = prevValue !== null ? d.value >= prevValue : true
+    return { x, y, barHeight, value: d.value, month: d.month, growth, isIncrease }
+  })
+
+  const curvePoints = bars.map(b => ({ x: b.x + CHART_BAR_WIDTH / 2, y: b.y }))
+
+  let pathD = ''
+  if (curvePoints.length > 0) {
+    pathD = `M ${curvePoints[0].x} ${curvePoints[0].y}`
+    for (let i = 1; i < curvePoints.length; i++) {
+      const prev = curvePoints[i - 1]
+      const curr = curvePoints[i]
+      pathD += ` C ${prev.x + (curr.x - prev.x) * 0.4} ${prev.y}, ${curr.x - (curr.x - prev.x) * 0.4} ${curr.y}, ${curr.x} ${curr.y}`
+    }
+  }
+
+  const areaD = pathD
+    ? `${pathD} L ${curvePoints[curvePoints.length - 1].x} ${CHART_HEIGHT - 20} L ${curvePoints[0].x} ${CHART_HEIGHT - 20} Z`
+    : ''
 
   if (loading) {
     return (
@@ -164,37 +394,13 @@ export default function Dashboard() {
       <div className="min-h-screen bg-gray-50 flex items-center justify-center">
         <div className="text-center">
           <div className="text-xl text-gray-600 mb-4">Failed to load data</div>
-          <button onClick={() => { setError(false); setLoading(true); cache.timestamp = 0; fetchData() }} className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700">Retry</button>
+          <button onClick={() => { setError(false); cache.timestamp = 0; loadData() }} className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700">
+            Retry
+          </button>
         </div>
       </div>
     )
   }
-
-  const maxValue = Math.max(...salesData.map(d => d.value), 1)
-  const chartHeight = 200
-  const chartWidth = 600
-  const barWidth = 60
-  const padding = 80
-  const spacing = (chartWidth - padding * 2) / (salesData.length || 1)
-  const bars = salesData.map((d, i) => {
-    const x = padding + i * spacing + spacing / 2 - barWidth / 2
-    const barHeight = (d.value / maxValue) * (chartHeight - 40)
-    const y = chartHeight - barHeight - 20
-    const prevValue = i > 0 ? salesData[i - 1].value : null
-    const growth = prevValue !== null ? ((d.value - prevValue) / (prevValue || 1) * 100).toFixed(1) : null
-    const isIncrease = prevValue !== null ? d.value >= prevValue : true
-    return { x, y, barHeight, value: d.value, month: d.month, growth, isIncrease }
-  })
-  const curvePoints = bars.map(b => ({ x: b.x + barWidth / 2, y: b.y }))
-  let pathD = ''
-  if (curvePoints.length > 0) {
-    pathD = `M ${curvePoints[0].x} ${curvePoints[0].y}`
-    for (let i = 1; i < curvePoints.length; i++) {
-      const prev = curvePoints[i - 1]; const curr = curvePoints[i]
-      pathD += ` C ${prev.x + (curr.x - prev.x) * 0.4} ${prev.y}, ${curr.x - (curr.x - prev.x) * 0.4} ${curr.y}, ${curr.x} ${curr.y}`
-    }
-  }
-  const areaD = pathD ? `${pathD} L ${curvePoints[curvePoints.length - 1].x} ${chartHeight - 20} L ${curvePoints[0].x} ${chartHeight - 20} Z` : ''
 
   return (
     <div className="min-h-screen bg-gray-50">
@@ -204,6 +410,7 @@ export default function Dashboard() {
           <div className="flex-shrink-0"><img src="/logo.png" alt="HighScope Engineering FZC" className="h-24 w-auto" /></div>
         </div>
       </header>
+
       <main className="max-w-7xl mx-auto py-6 sm:px-6 lg:px-8">
         <div className="grid grid-cols-1 lg:grid-cols-3 gap-6 mb-8">
           <div className="lg:col-span-2">
@@ -211,37 +418,49 @@ export default function Dashboard() {
             <div className="bg-white shadow rounded-lg p-6">
               {salesData.length > 0 ? (
                 <div className="relative">
-                  <svg viewBox={`0 0 ${chartWidth} ${chartHeight + 40}`} className="w-full h-64" preserveAspectRatio="xMidYMid meet">
+                  <svg viewBox={`0 0 ${CHART_WIDTH} ${CHART_HEIGHT + 40}`} className="w-full h-64" preserveAspectRatio="xMidYMid meet">
                     <defs>
-                      <linearGradient id="barGradient" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stopColor="#6EE7B7" stopOpacity="0.9" /><stop offset="100%" stopColor="#3B82F6" stopOpacity="0.4" /></linearGradient>
-                      <linearGradient id="areaGradient" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stopColor="#3B82F6" stopOpacity="0.15" /><stop offset="100%" stopColor="#3B82F6" stopOpacity="0.02" /></linearGradient>
+                      <linearGradient id="barGradient" x1="0" y1="0" x2="0" y2="1">
+                        <stop offset="0%" stopColor="#6EE7B7" stopOpacity="0.9" />
+                        <stop offset="100%" stopColor="#3B82F6" stopOpacity="0.4" />
+                      </linearGradient>
+                      <linearGradient id="areaGradient" x1="0" y1="0" x2="0" y2="1">
+                        <stop offset="0%" stopColor="#3B82F6" stopOpacity="0.15" />
+                        <stop offset="100%" stopColor="#3B82F6" stopOpacity="0.02" />
+                      </linearGradient>
                       <filter id="glow"><feGaussianBlur stdDeviation="3" result="coloredBlur" /><feMerge><feMergeNode in="coloredBlur" /><feMergeNode in="SourceGraphic" /></feMerge></filter>
                       <filter id="barShadow"><feDropShadow dx="0" dy="2" stdDeviation="3" floodColor="#3B82F6" floodOpacity="0.2" /></filter>
                     </defs>
                     {[0, 0.25, 0.5, 0.75, 1].map((ratio) => (
-                      <line key={ratio} x1={padding - 10} y1={chartHeight - 20 - ratio * (chartHeight - 40)} x2={chartWidth - padding + 10} y2={chartHeight - 20 - ratio * (chartHeight - 40)} stroke="#E5E7EB" strokeWidth="1" strokeDasharray="4 4" />
+                      <line key={ratio} x1={CHART_PADDING - 10} y1={CHART_HEIGHT - 20 - ratio * (CHART_HEIGHT - 40)} x2={CHART_WIDTH - CHART_PADDING + 10} y2={CHART_HEIGHT - 20 - ratio * (CHART_HEIGHT - 40)} stroke="#E5E7EB" strokeWidth="1" strokeDasharray="4 4" />
                     ))}
                     {bars.map((b, i) => (
                       <g key={i} filter="url(#barShadow)">
-                        <rect x={b.x} y={b.y} width={barWidth} height={b.barHeight} rx="4" fill="url(#barGradient)" />
-                        <text x={b.x + barWidth / 2} y={b.y - 8} textAnchor="middle" fill="#374151" fontSize="11" fontWeight="600">{b.value >= 1000 ? `${(b.value / 1000).toFixed(1)}k` : b.value}</text>
+                        <rect x={b.x} y={b.y} width={CHART_BAR_WIDTH} height={b.barHeight} rx="4" fill="url(#barGradient)" />
+                        <text x={b.x + CHART_BAR_WIDTH / 2} y={b.y - 8} textAnchor="middle" fill="#374151" fontSize="11" fontWeight="600">
+                          {b.value >= 1000 ? `${(b.value / 1000).toFixed(1)}k` : b.value}
+                        </text>
                       </g>
                     ))}
                     {areaD && <path d={areaD} fill="url(#areaGradient)" />}
                     {pathD && <path d={pathD} fill="none" stroke="#3B82F6" strokeWidth="3" strokeLinecap="round" filter="url(#glow)" />}
                     {curvePoints.map((pt, i) => (<g key={i}><circle cx={pt.x} cy={pt.y} r="5" fill="#3B82F6" /><circle cx={pt.x} cy={pt.y} r="3" fill="white" /></g>))}
                     {bars.map((b, i) => (
-                      <rect key={`hit-${i}`} x={b.x - 10} y={20} width={barWidth + 20} height={chartHeight} fill="transparent" className="cursor-pointer"
-                        onMouseEnter={(e) => { const rect = e.currentTarget.closest('svg')?.getBoundingClientRect(); if (rect) setChartTooltip({ x: rect.left + (b.x + barWidth / 2) * (rect.width / chartWidth), y: rect.top + b.y * (rect.height / (chartHeight + 40)), month: b.month, value: b.value, growth: b.growth || '', isIncrease: b.isIncrease }) }}
+                      <rect key={`hit-${i}`} x={b.x - 10} y={20} width={CHART_BAR_WIDTH + 20} height={CHART_HEIGHT} fill="transparent" className="cursor-pointer"
+                        onMouseEnter={(e) => { const rect = e.currentTarget.closest('svg')?.getBoundingClientRect(); if (rect) setChartTooltip({ x: rect.left + (b.x + CHART_BAR_WIDTH / 2) * (rect.width / CHART_WIDTH), y: rect.top + b.y * (rect.height / (CHART_HEIGHT + 40)), month: b.month, value: b.value, growth: b.growth || '', isIncrease: b.isIncrease }) }}
                         onMouseLeave={() => setChartTooltip(null)} />
                     ))}
-                    {bars.map((b, i) => (<text key={i} x={b.x + barWidth / 2} y={chartHeight + 15} textAnchor="middle" fill="#6B7280" fontSize="12" fontWeight="500">{b.month}</text>))}
+                    {bars.map((b, i) => (<text key={i} x={b.x + CHART_BAR_WIDTH / 2} y={CHART_HEIGHT + 15} textAnchor="middle" fill="#6B7280" fontSize="12" fontWeight="500">{b.month}</text>))}
                   </svg>
                   {chartTooltip && (
                     <div className="fixed z-[9999] bg-gray-900 text-white text-xs rounded-lg px-3 py-2 shadow-lg pointer-events-none" style={{ left: chartTooltip.x, top: chartTooltip.y - 10, transform: 'translate(-50%, -100%)' }}>
                       <div className="font-semibold">{chartTooltip.month}</div>
                       <div>AED {chartTooltip.value.toLocaleString()}</div>
-                      {chartTooltip.growth && (<div className={chartTooltip.isIncrease ? 'text-green-400' : 'text-red-400'}>{chartTooltip.isIncrease ? '↑' : '↓'} {Math.abs(parseFloat(chartTooltip.growth))}% from previous month</div>)}
+                      {chartTooltip.growth && (
+                        <div className={chartTooltip.isIncrease ? 'text-green-400' : 'text-red-400'}>
+                          {chartTooltip.isIncrease ? '↑' : '↓'} {Math.abs(parseFloat(chartTooltip.growth))}% from previous month
+                        </div>
+                      )}
                     </div>
                   )}
                 </div>
@@ -249,6 +468,7 @@ export default function Dashboard() {
               <div className="mt-4 text-center text-sm text-gray-500">Customer PO Value (AED) by Month</div>
             </div>
           </div>
+
           <div>
             <div className="flex items-center justify-between mb-4">
               <h2 className="text-lg font-semibold text-gray-900">Monthly Reports</h2>
@@ -274,6 +494,7 @@ export default function Dashboard() {
             </div>
           </div>
         </div>
+
         <div className="mb-8">
           <h2 className="text-lg font-semibold text-gray-900 mb-4">Replenishment Plan</h2>
           <div className="bg-white shadow rounded-lg p-6">
@@ -289,6 +510,7 @@ export default function Dashboard() {
             </div>
           </div>
         </div>
+
         <div className="mb-8">
           <div className="flex items-center justify-between mb-4">
             <h2 className="text-lg font-semibold text-gray-900">Product Categories</h2>
@@ -314,7 +536,7 @@ export default function Dashboard() {
                     <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">{category.item_count}</td>
                     <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
                       {category.isDeleted ? <span className="text-gray-400 text-xs">Archived {new Date(category.deletedAt!).toLocaleDateString()}</span> : (
-                        <><button onClick={() => handleEditCategory(category)} className="text-blue-600 hover:text-blue-800 mr-3">Edit</button><button onClick={() => { setDeletingCategory(category); setDeleteData({ name: '', reason: '' }) }} className="text-red-600 hover:text-red-800">Delete</button></>
+                        <><button onClick={() => setEditingCategory(category)} className="text-blue-600 hover:text-blue-800 mr-3">Edit</button><button onClick={() => setDeletingCategory(category)} className="text-red-600 hover:text-red-800">Delete</button></>
                       )}
                     </td>
                   </tr>
@@ -325,71 +547,9 @@ export default function Dashboard() {
         </div>
       </main>
 
-      {showAddCategory && (
-        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
-          <div className="bg-white rounded-lg shadow-xl max-w-md w-full mx-4">
-            <div className="p-6">
-              <div className="flex justify-between items-center mb-4">
-                <h2 className="text-xl font-semibold text-gray-900">Add New Category</h2>
-                <button onClick={() => { setShowAddCategory(false); setNewCategory({ name: '', description: '' }) }} className="text-gray-400 hover:text-gray-600"><svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" /></svg></button>
-              </div>
-              <div className="space-y-4">
-                <div><label className="block text-sm font-medium text-gray-700">Category Name *</label><input type="text" value={newCategory.name} onChange={(e) => setNewCategory({ ...newCategory, name: e.target.value })} className="mt-1 block w-full border border-gray-300 rounded-md shadow-sm py-2 px-3 focus:outline-none focus:ring-blue-500 focus:border-blue-500 sm:text-sm" placeholder="Enter category name" /></div>
-                <div><label className="block text-sm font-medium text-gray-700">Description</label><textarea value={newCategory.description} onChange={(e) => setNewCategory({ ...newCategory, description: e.target.value })} rows={3} className="mt-1 block w-full border border-gray-300 rounded-md shadow-sm py-2 px-3 focus:outline-none focus:ring-blue-500 focus:border-blue-500 sm:text-sm" placeholder="Enter category description (optional)" /></div>
-              </div>
-              <div className="flex justify-end space-x-3 mt-6">
-                <button onClick={() => { setShowAddCategory(false); setNewCategory({ name: '', description: '' }) }} className="px-4 py-2 border border-gray-300 rounded-md shadow-sm text-sm font-medium text-gray-700 bg-white hover:bg-gray-50">Cancel</button>
-                <button onClick={handleAddCategory} className="px-4 py-2 border border-transparent rounded-md shadow-sm text-sm font-medium text-white bg-blue-600 hover:bg-blue-700">Add Category</button>
-              </div>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {editingCategory && (
-        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
-          <div className="bg-white rounded-lg shadow-xl max-w-md w-full mx-4">
-            <div className="p-6">
-              <div className="flex justify-between items-center mb-4">
-                <h2 className="text-xl font-semibold text-gray-900">Edit Category</h2>
-                <button onClick={() => { setEditingCategory(null); setEditCategoryData({ name: '', description: '' }) }} className="text-gray-400 hover:text-gray-600"><svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" /></svg></button>
-              </div>
-              <div className="space-y-4">
-                <div><label className="block text-sm font-medium text-gray-700">Category Name *</label><input type="text" value={editCategoryData.name} onChange={(e) => setEditCategoryData({ ...editCategoryData, name: e.target.value })} className="mt-1 block w-full border border-gray-300 rounded-md shadow-sm py-2 px-3 focus:outline-none focus:ring-blue-500 focus:border-blue-500 sm:text-sm" placeholder="Enter category name" /></div>
-                <div><label className="block text-sm font-medium text-gray-700">Description</label><textarea value={editCategoryData.description} onChange={(e) => setEditCategoryData({ ...editCategoryData, description: e.target.value })} rows={3} className="mt-1 block w-full border border-gray-300 rounded-md shadow-sm py-2 px-3 focus:outline-none focus:ring-blue-500 focus:border-blue-500 sm:text-sm" placeholder="Enter category description (optional)" /></div>
-              </div>
-              <div className="flex justify-end space-x-3 mt-6">
-                <button onClick={() => { setEditingCategory(null); setEditCategoryData({ name: '', description: '' }) }} className="px-4 py-2 border border-gray-300 rounded-md shadow-sm text-sm font-medium text-gray-700 bg-white hover:bg-gray-50">Cancel</button>
-                <button onClick={handleUpdateCategory} className="px-4 py-2 border border-transparent rounded-md shadow-sm text-sm font-medium text-white bg-blue-600 hover:bg-blue-700">Save Changes</button>
-              </div>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {deletingCategory && (
-        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
-          <div className="bg-white rounded-lg shadow-xl max-w-md w-full mx-4">
-            <div className="p-6">
-              <div className="flex justify-between items-center mb-4">
-                <h2 className="text-xl font-semibold text-gray-900">Archive Category</h2>
-                <button onClick={() => { setDeletingCategory(null); setDeleteData({ name: '', reason: '' }) }} className="text-gray-400 hover:text-gray-600"><svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" /></svg></button>
-              </div>
-              <div className="mb-4 p-4 bg-yellow-50 border border-yellow-200 rounded-md">
-                <p className="text-sm text-yellow-800">You are about to archive <strong>&quot;{deletingCategory.name}&quot;</strong>. This category will be moved to the bottom of the list and its name will be struck through. The data will not be deleted.</p>
-              </div>
-              <div className="space-y-4">
-                <div><label className="block text-sm font-medium text-gray-700">Your Name *</label><input type="text" value={deleteData.name} onChange={(e) => setDeleteData({ ...deleteData, name: e.target.value })} className="mt-1 block w-full border border-gray-300 rounded-md shadow-sm py-2 px-3 focus:outline-none focus:ring-blue-500 focus:border-blue-500 sm:text-sm" placeholder="Enter your name to confirm" /></div>
-                <div><label className="block text-sm font-medium text-gray-700">Reason for Archiving *</label><textarea value={deleteData.reason} onChange={(e) => setDeleteData({ ...deleteData, reason: e.target.value })} rows={3} className="mt-1 block w-full border border-gray-300 rounded-md shadow-sm py-2 px-3 focus:outline-none focus:ring-blue-500 focus:border-blue-500 sm:text-sm" placeholder="Enter the reason for archiving this category" /></div>
-              </div>
-              <div className="flex justify-end space-x-3 mt-6">
-                <button onClick={() => { setDeletingCategory(null); setDeleteData({ name: '', reason: '' }) }} className="px-4 py-2 border border-gray-300 rounded-md shadow-sm text-sm font-medium text-gray-700 bg-white hover:bg-gray-50">Cancel</button>
-                <button onClick={confirmDeleteCategory} className="px-4 py-2 border border-transparent rounded-md shadow-sm text-sm font-medium text-white bg-red-600 hover:bg-red-700">Archive Category</button>
-              </div>
-            </div>
-          </div>
-        </div>
-      )}
+      {showAddCategory && <CategoryModal mode="add" data={{ name: '', description: '' }} onClose={() => setShowAddCategory(false)} onSubmit={handleAddCategory} />}
+      {editingCategory && <CategoryModal mode="edit" data={{ name: editingCategory.name, description: editingCategory.description || '' }} onClose={() => setEditingCategory(null)} onSubmit={handleUpdateCategory} />}
+      {deletingCategory && <DeleteCategoryModal category={deletingCategory} onClose={() => setDeletingCategory(null)} onConfirm={handleDeleteCategory} />}
     </div>
   )
 }
