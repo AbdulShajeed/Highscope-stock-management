@@ -1,10 +1,20 @@
 import { NextRequest, NextResponse } from 'next/server'
 import prisma from '@/lib/db'
 
+// Server-side in-memory cache
+const apiCache = new Map<string, { data: any; timestamp: number }>()
+const CACHE_TTL = 60_000
+
 export async function GET(request: NextRequest) {
   try {
     const { searchParams } = new URL(request.url)
     const categoryId = searchParams.get('categoryId')
+
+    const cacheKey = `purchase-orders-${categoryId || 'all'}`
+    const cached = apiCache.get(cacheKey)
+    if (cached && Date.now() - cached.timestamp < CACHE_TTL) {
+      return NextResponse.json(cached.data)
+    }
 
     const where: any = {}
     if (categoryId) where.categoryId = categoryId
@@ -24,14 +34,19 @@ export async function GET(request: NextRequest) {
       where: { ...where, status: 'Delivered' }
     })
 
-    return NextResponse.json({
+    const result = {
       poList,
       summary: {
         totalPO: summary._count,
         totalPOValue: summary._sum.totalValue || 0,
         totalPOReceived: deliveredCount,
       }
-    })
+    }
+
+    // Cache the result
+    apiCache.set(cacheKey, { data: result, timestamp: Date.now() })
+
+    return NextResponse.json(result)
   } catch (error) {
     console.error('Error fetching purchase orders:', error)
     return NextResponse.json({ error: 'Failed to fetch purchase orders' }, { status: 500 })
@@ -53,6 +68,9 @@ export async function POST(request: NextRequest) {
       }
     })
 
+    // Invalidate cache
+    apiCache.clear()
+
     return NextResponse.json(po, { status: 201 })
   } catch (error) {
     console.error('Error creating purchase order:', error)
@@ -73,6 +91,8 @@ export async function PUT(request: NextRequest) {
     if (updateData.totalValue !== undefined) data.totalValue = parseFloat(updateData.totalValue)
 
     const po = await prisma.purchaseOrder.update({ where: { id }, data })
+    // Invalidate cache
+    apiCache.clear()
     return NextResponse.json(po)
   } catch (error) {
     console.error('Error updating purchase order:', error)
@@ -86,6 +106,8 @@ export async function DELETE(request: NextRequest) {
     const id = searchParams.get('id')
     if (!id) return NextResponse.json({ error: 'Purchase Order ID is required' }, { status: 400 })
     await prisma.purchaseOrder.delete({ where: { id } })
+    // Invalidate cache
+    apiCache.clear()
     return NextResponse.json({ message: 'Purchase order deleted successfully' })
   } catch (error) {
     console.error('Error deleting purchase order:', error)

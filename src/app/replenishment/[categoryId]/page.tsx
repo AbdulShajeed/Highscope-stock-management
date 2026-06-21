@@ -119,31 +119,38 @@ export default function CategoryReplenishmentPage() {
     }
   }
 
+  // Cache for replenishment pages
+  const repCache = { data: null as any, timestamp: 0 }
+  const REP_CACHE_TTL = 60_000
+
   useEffect(() => {
-    const fetchCategory = async () => {
-      try {
-        const res = await fetch('/api/categories')
-        const cats = await res.json()
-        const found = cats.find((c: Category) => c.id === categoryId)
-        setCategory(found || null)
-      } catch (error) {
-        console.error('Error fetching category:', error)
+    const fetchData = async () => {
+      const cacheKey = `rep_${categoryId}`
+      if (repCache.data && repCache.data.key === cacheKey && Date.now() - repCache.timestamp < REP_CACHE_TTL) {
+        setCategory(repCache.data.category)
+        setStockItems(repCache.data.stockItems)
+        setPoList(repCache.data.poList)
+        setSummary(repCache.data.summary)
+        setLoading(false)
+        return
       }
-    }
-
-    const fetchStockItems = async () => {
       try {
-        const res = await fetch(`/api/stock-items?categoryId=${categoryId}`)
+        const res = await fetch(`/api/replenishment-data?id=${categoryId}`)
         const data = await res.json()
-        setStockItems(data)
+
+        setCategory(data.category)
+        setStockItems(data.stockItems)
+        setPoList(data.poList)
+        setSummary(data.summary)
+        repCache.data = { key: cacheKey, category: data.category, stockItems: data.stockItems, poList: data.poList, summary: data.summary }
+        repCache.timestamp = Date.now()
       } catch (error) {
-        console.error('Error fetching stock items:', error)
+        console.error('Error fetching data:', error)
+      } finally {
+        setLoading(false)
       }
     }
-
-    fetchCategory()
-    fetchStockItems()
-    fetchPOs()
+    fetchData()
   }, [categoryId])
 
   const handleAddPO = async () => {
@@ -433,15 +440,10 @@ export default function CategoryReplenishmentPage() {
     })
   }
 
-  if (loading) {
-    return (
-      <div className="min-h-screen bg-gray-50 flex items-center justify-center">
-        <div className="text-xl text-gray-600">Loading...</div>
-      </div>
-    )
-  }
+  // Show page structure immediately, data fills in background
+  const categoryName = category?.name || 'Loading...'
 
-  if (!category) {
+  if (!loading && !category) {
     return (
       <div className="min-h-screen bg-gray-50 flex items-center justify-center">
         <div className="text-xl text-gray-600">Category not found</div>
@@ -458,7 +460,7 @@ export default function CategoryReplenishmentPage() {
               <Link href="/" className="text-blue-600 hover:text-blue-800 text-sm">
                 ← Back to Dashboard
               </Link>
-              <h1 className="mt-2 text-3xl font-bold text-gray-900">{category.name} — Replenishment</h1>
+              <h1 className="mt-2 text-3xl font-bold text-gray-900">{categoryName} — Replenishment</h1>
             </div>
             <button
               onClick={() => setShowForm(true)}
@@ -488,6 +490,15 @@ export default function CategoryReplenishmentPage() {
         </div>
 
         {/* PO Table */}
+        {loading ? (
+          <div className="bg-white shadow rounded-lg p-6">
+            <div className="space-y-3">
+              {[1,2,3].map(i => (
+                <div key={i} className="h-12 bg-gray-100 rounded animate-pulse"></div>
+              ))}
+            </div>
+          </div>
+        ) : (
         <div className="bg-white shadow overflow-hidden sm:rounded-lg">
           <div className="overflow-x-auto">
             <table className="min-w-full divide-y divide-gray-200">
@@ -742,6 +753,7 @@ export default function CategoryReplenishmentPage() {
             </table>
           </div>
         </div>
+        )}
       </main>
 
       {/* Add PO Modal */}

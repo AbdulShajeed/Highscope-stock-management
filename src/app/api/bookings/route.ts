@@ -1,12 +1,22 @@
 import { NextRequest, NextResponse } from 'next/server'
 import prisma from '@/lib/db'
 
+// Server-side in-memory cache
+const apiCache = new Map<string, { data: any; timestamp: number }>()
+const CACHE_TTL = 60_000
+
 export async function GET(request: NextRequest) {
   try {
     const { searchParams } = new URL(request.url)
     const categoryId = searchParams.get('categoryId')
     const month = searchParams.get('month')
     const year = searchParams.get('year')
+
+    const cacheKey = `bookings-${categoryId || 'all'}-${month || ''}-${year || ''}`
+    const cached = apiCache.get(cacheKey)
+    if (cached && Date.now() - cached.timestamp < CACHE_TTL) {
+      return NextResponse.json(cached.data)
+    }
 
     const where: any = { isDeleted: 0 }
     if (categoryId) where.categoryId = categoryId
@@ -27,6 +37,9 @@ export async function GET(request: NextRequest) {
       isDeleted: b.isDeleted, createdAt: b.createdAt, updatedAt: b.updatedAt,
       itemCode: b.stockItem.itemCode, item_description: b.stockItem.description, make: b.stockItem.make,
     }))
+
+    // Cache the result
+    apiCache.set(cacheKey, { data: result, timestamp: Date.now() })
 
     return NextResponse.json(result)
   } catch (error) {
@@ -54,6 +67,9 @@ export async function POST(request: NextRequest) {
       include: { stockItem: { select: { itemCode: true, description: true, make: true } } }
     })
 
+    // Invalidate cache
+    apiCache.clear()
+
     return NextResponse.json({
       ...booking, itemCode: booking.stockItem.itemCode,
       item_description: booking.stockItem.description, make: booking.stockItem.make,
@@ -80,6 +96,9 @@ export async function PUT(request: NextRequest) {
       include: { stockItem: { select: { itemCode: true, description: true, make: true } } }
     })
 
+    // Invalidate cache
+    apiCache.clear()
+
     return NextResponse.json({
       ...booking, itemCode: booking.stockItem.itemCode,
       item_description: booking.stockItem.description, make: booking.stockItem.make,
@@ -96,6 +115,8 @@ export async function DELETE(request: NextRequest) {
     const id = searchParams.get('id')
     if (!id) return NextResponse.json({ error: 'Booking ID is required' }, { status: 400 })
     await prisma.booking.delete({ where: { id } })
+    // Invalidate cache
+    apiCache.clear()
     return NextResponse.json({ message: 'Booking deleted successfully' })
   } catch (error) {
     console.error('Error deleting booking:', error)

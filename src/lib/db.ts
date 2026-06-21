@@ -6,12 +6,17 @@ const globalForPrisma = globalThis as unknown as {
 }
 
 function createPrismaClient() {
-  const adapter = new PrismaPg({ connectionString: process.env.DATABASE_URL! })
-  return new PrismaClient({ adapter })
+  const adapter = new PrismaPg({
+    connectionString: process.env.DATABASE_URL!,
+  })
+  return new PrismaClient({
+    adapter,
+    log: process.env.NODE_ENV === 'development' ? ['error'] : [],
+  })
 }
 
-const prisma = globalForPrisma.prisma ?? createPrismaClient()
-
-if (process.env.NODE_ENV !== 'production') globalForPrisma.prisma = prisma
+// Always cache in globalThis to survive across requests in the same isolate
+export const prisma = globalForPrisma.prisma ?? createPrismaClient()
+globalForPrisma.prisma = prisma
 
 export default prisma

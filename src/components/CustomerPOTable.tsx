@@ -44,15 +44,9 @@ export default function CustomerPOTable({ categoryId }: CustomerPOTableProps) {
 
   const fetchPOs = async () => {
     try {
-      const response = await fetch(`/api/customer-pos?categoryId=${categoryId}`)
+      const response = await fetch(`/api/customer-pos?categoryId=${categoryId}&month=${selectedMonth}&year=${selectedYear}`)
       const data = await response.json()
-      // Filter by selected month and year
-      const filtered = data.filter((po: CustomerPO) => {
-        if (!po.date) return false
-        const poDate = new Date(po.date)
-        return poDate.getMonth() === allMonths.indexOf(selectedMonth) && poDate.getFullYear() === selectedYear
-      })
-      setPOs(filtered)
+      setPOs(data)
     } catch (error) {
       console.error('Error fetching customer POs:', error)
     } finally {

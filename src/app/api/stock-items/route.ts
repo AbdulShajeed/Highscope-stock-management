@@ -1,11 +1,21 @@
 import { NextRequest, NextResponse } from 'next/server'
 import prisma from '@/lib/db'
 
+// Server-side in-memory cache
+const apiCache = new Map<string, { data: any; timestamp: number }>()
+const CACHE_TTL = 60_000
+
 export async function GET(request: NextRequest) {
   try {
     const { searchParams } = new URL(request.url)
     const categoryId = searchParams.get('categoryId')
     const search = searchParams.get('search')
+
+    const cacheKey = `stock-items-${categoryId || 'all'}-${search || ''}`
+    const cached = apiCache.get(cacheKey)
+    if (cached && Date.now() - cached.timestamp < CACHE_TTL) {
+      return NextResponse.json(cached.data)
+    }
 
     const where: any = {}
     if (categoryId) where.categoryId = categoryId
@@ -17,15 +27,11 @@ export async function GET(request: NextRequest) {
       ]
     }
 
+    // Fetch stock items (lightweight, no joins)
     const stockItems = await prisma.stockItem.findMany({
       where,
       include: {
         category: { select: { name: true } },
-        poLineItems: {
-          include: {
-            purchaseOrder: { select: { status: true } },
-          }
-        },
       },
       orderBy: [
         { sortOrder: 'asc' },
@@ -33,24 +39,40 @@ export async function GET(request: NextRequest) {
       ]
     })
 
+    // Fetch PO line items data for incoming calculation in one query
+    const poData = await prisma.pOLineItem.findMany({
+      where: {
+        stockItem: { categoryId: categoryId || undefined },
+        purchaseOrder: { status: { not: 'Delivered' } },
+      },
+      select: {
+        stockItemId: true,
+        quantity: true,
+        deliveredQuantity: true,
+      }
+    })
+
     // Calculate incoming and delivered quantities from POs
     const result = stockItems.map(item => {
-      const incomingQty = item.poLineItems
-        .filter(li => li.purchaseOrder.status !== 'Delivered' && (li.quantity - li.deliveredQuantity) > 0)
-        .reduce((sum, li) => sum + (li.quantity - li.deliveredQuantity), 0)
+      const itemPOData = poData.filter(d => d.stockItemId === item.id)
+      const incomingQty = itemPOData
+        .filter(d => d.quantity - d.deliveredQuantity > 0)
+        .reduce((sum, d) => sum + (d.quantity - d.deliveredQuantity), 0)
 
-      const deliveredQty = item.poLineItems
-        .filter(li => li.deliveredQuantity > 0)
-        .reduce((sum, li) => sum + li.deliveredQuantity, 0)
+      const deliveredQty = itemPOData
+        .filter(d => d.deliveredQuantity > 0)
+        .reduce((sum, d) => sum + d.deliveredQuantity, 0)
 
       return {
         ...item,
         category_name: item.category.name,
         incomingQty,
         finalQty: item.finalQty + deliveredQty,
-        poLineItems: undefined,
       }
     })
+
+    // Cache the result
+    apiCache.set(cacheKey, { data: result, timestamp: Date.now() })
 
     return NextResponse.json(result)
   } catch (error) {
@@ -96,6 +118,9 @@ export async function POST(request: NextRequest) {
       include: { category: { select: { name: true } } }
     })
 
+    // Invalidate cache
+    apiCache.clear()
+
     return NextResponse.json({ ...stockItem, category_name: stockItem.category.name }, { status: 201 })
   } catch (error) {
     console.error('Error creating stock item:', error)
@@ -139,6 +164,9 @@ export async function PUT(request: NextRequest) {
       include: { category: { select: { name: true } } }
     })
 
+    // Invalidate cache
+    apiCache.clear()
+
     return NextResponse.json({ ...stockItem, category_name: stockItem.category.name })
   } catch (error) {
     console.error('Error updating stock item:', error)
@@ -154,6 +182,8 @@ export async function DELETE(request: NextRequest) {
     if (!id) return NextResponse.json({ error: 'Stock item ID is required' }, { status: 400 })
 
     await prisma.stockItem.delete({ where: { id } })
+    // Invalidate cache
+    apiCache.clear()
 
     return NextResponse.json({ message: 'Stock item deleted successfully' })
   } catch (error) {

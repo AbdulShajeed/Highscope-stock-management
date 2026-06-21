@@ -98,20 +98,28 @@ export default function CategoryPage() {
     }
   }, [currentMonth])
 
+  // Cache for category pages
+  const catCache = { data: null as any, timestamp: 0 }
+  const CAT_CACHE_TTL = 60_000
+
   useEffect(() => {
     const fetchData = async () => {
+      const cacheKey = `cat_${categoryId}`
+      const cached = catCache.data && catCache.data.key === cacheKey && Date.now() - catCache.timestamp < CAT_CACHE_TTL
+      if (cached) {
+        setCategory(catCache.data.category)
+        setStockItems(catCache.data.items)
+        setLoading(false)
+        return
+      }
       try {
-        const [categoryRes, itemsRes] = await Promise.all([
-          fetch(`/api/categories`),
-          fetch(`/api/stock-items?categoryId=${categoryId}`),
-        ])
+        const res = await fetch(`/api/category-data?id=${categoryId}`)
+        const data = await res.json()
 
-        const categoriesData = await categoryRes.json()
-        const itemsData = await itemsRes.json()
-
-        const foundCategory = categoriesData.find((c: Category) => c.id === categoryId)
-        setCategory(foundCategory || null)
-        setStockItems(itemsData)
+        setCategory(data.category)
+        setStockItems(data.stockItems)
+        catCache.data = { key: cacheKey, category: data.category, items: data.stockItems }
+        catCache.timestamp = Date.now()
       } catch (error) {
         console.error('Error fetching data:', error)
       } finally {
@@ -319,15 +327,11 @@ export default function CategoryPage() {
     (item.make && item.make.toLowerCase().includes(searchTerm.toLowerCase()))
   )
 
-  if (loading) {
-    return (
-      <div className="min-h-screen bg-gray-50 flex items-center justify-center">
-        <div className="text-xl text-gray-600">Loading...</div>
-      </div>
-    )
-  }
+  // Show page structure immediately, data fills in background
+  const categoryName = category?.name || 'Loading...'
+  const categoryDesc = category?.description
 
-  if (!category) {
+  if (!loading && !category) {
     return (
       <div className="min-h-screen bg-gray-50 flex items-center justify-center">
         <div className="text-xl text-gray-600">Category not found</div>
@@ -344,9 +348,9 @@ export default function CategoryPage() {
               <Link href="/" className="text-blue-600 hover:text-blue-800 text-sm">
                 ← Back to Dashboard
               </Link>
-              <h1 className="mt-2 text-3xl font-bold text-gray-900">{category.name}</h1>
-              {category.description && (
-                <p className="mt-2 text-sm text-gray-600">{category.description}</p>
+              <h1 className="mt-2 text-3xl font-bold text-gray-900">{categoryName}</h1>
+              {categoryDesc && (
+                <p className="mt-2 text-sm text-gray-600">{categoryDesc}</p>
               )}
             </div>
             {activeTab === 'master' && (
@@ -420,14 +424,24 @@ export default function CategoryPage() {
             </div>
 
             {/* Stock Table */}
-            <StockTable
-              items={filteredItems}
-              categoryId={categoryId}
-              refreshKey={refreshKey}
-              onEdit={handleEditItem}
-              onSplit={handleSplit}
-              onDelete={handleDeleteItem}
-            />
+            {loading ? (
+              <div className="bg-white shadow rounded-lg p-6">
+                <div className="space-y-3">
+                  {[1,2,3,4,5].map(i => (
+                    <div key={i} className="h-10 bg-gray-100 rounded animate-pulse"></div>
+                  ))}
+                </div>
+              </div>
+            ) : (
+              <StockTable
+                items={filteredItems}
+                categoryId={categoryId}
+                refreshKey={refreshKey}
+                onEdit={handleEditItem}
+                onSplit={handleSplit}
+                onDelete={handleDeleteItem}
+              />
+            )}
           </>
         )}
 
